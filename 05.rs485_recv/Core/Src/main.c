@@ -22,16 +22,17 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+#define RS485_EN(x) (x?(HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET),HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET)):(HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET),HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET)))
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define RS485_EN(x) (x?(HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET),HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET)):(HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET),HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET)))
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,6 +41,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
@@ -50,12 +52,48 @@ UART_HandleTypeDef huart3;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define MAX_RS485_BUF 100
+
+typedef struct {
+	uint8_t buf[MAX_RS485_BUF];
+	uint8_t in;
+	uint8_t out;
+	uint8_t size;
+} rs485_t;
+rs485_t rs485_buf;
+uint8_t rx_buf;
+
+uint8_t get_rs485_data(uint8_t* buf)
+{
+	if(buf == NULL) {
+		return 0;
+	}
+
+	if(rs485_buf.size > 0)
+	{
+		(*buf) = rs485_buf.buf[rs485_buf.out];
+		rs485_buf.out = (rs485_buf.out+1) % MAX_RS485_BUF;
+	  	rs485_buf.size--;
+	  	return 1;
+	} else {
+		return 0;
+	}
+}
+
+
+int _write(int fd, char *ptr, int len)
+{
+	HAL_UART_Transmit(&huart1, (unsigned char*)ptr, len, HAL_MAX_DELAY);
+	return len;
+}
+
 
 /* USER CODE END 0 */
 
@@ -66,8 +104,8 @@ static void MX_USART3_UART_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	  char *rs485_msg = "Hello World\n";
-
+	uint8_t buf;
+	uint8_t len;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -89,7 +127,14 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART3_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  rs485_buf.in = 0;
+  rs485_buf.out = 0;
+  rs485_buf.size = 0;
+  HAL_UART_Receive_IT(&huart3, &rx_buf, 1);
+  RS485_EN(0); // rs485 read mode
+  printf("ready to listen\n");
 
   /* USER CODE END 2 */
 
@@ -97,10 +142,16 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  RS485_EN(1);
-	  HAL_UART_Transmit(&huart3, (uint8_t*)rs485_msg, strlen(rs485_msg), 0xffff);
-	  RS485_EN(0);
-	  HAL_Delay(1000);
+	  if(rs485_buf.size)
+	  {
+		  len = rs485_buf.size;
+		  for(uint8_t i=0;i<len;i++)
+		  {
+			  if(get_rs485_data(&buf)) {
+				  printf("%c", buf);
+			  }
+		  }
+	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -145,6 +196,39 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
@@ -207,7 +291,20 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart->Instance == huart3.Instance)
+	{
+		if(rs485_buf.size < MAX_RS485_BUF) {
+			rs485_buf.buf[rs485_buf.in] = rx_buf;
+			rs485_buf.in = (rs485_buf.in+1) % MAX_RS485_BUF;
+			rs485_buf.size++;
+		} else {
+			//queue is full
+		}
+	}
+	HAL_UART_Receive_IT(&huart3, &rx_buf, 1);
+}
 /* USER CODE END 4 */
 
 /**
